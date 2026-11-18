@@ -24,12 +24,13 @@ import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { chromium } from 'playwright'
+import { serveDir, verifyAppUrl } from '../helpers/env.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, '../..')
 const STANDARD_DIST = process.env.STANDARD_DIST_DIR || path.join(ROOT, 'dist-standard')
-const PORT = process.env.PORT || '5294'
-const APP_URL = process.env.APP_URL || `http://127.0.0.1:${PORT}`
+const PORT = process.env.PORT
+let APP_URL = process.env.APP_URL || ''
 const KEY = 'sk-auto-title-acceptance-key'
 const REPLY = '验收用 mock 回复。'
 /** 「去掉语气前缀 → 取前 20 字符 → 回退到句读处 → 补省略号」的期望值 */
@@ -62,15 +63,10 @@ if (!existsSync(path.join(STANDARD_DIST, 'index.html'))) {
   )
 }
 const children = []
-const staticServer = spawn(
-  'python3',
-  ['-m', 'http.server', PORT, '--bind', '127.0.0.1', '--directory', STANDARD_DIST],
-  {
-    cwd: ROOT,
-    stdio: 'ignore',
-  }
-)
-children.push(staticServer)
+// 端口自动发现（PORT 可注入），避免固定 5294 撞车
+const served = await serveDir(STANDARD_DIST, { port: PORT, label: '标准产物 dist-standard' })
+APP_URL = APP_URL || served.url
+await verifyAppUrl(APP_URL, STANDARD_DIST, { variant: 'standard' })
 const cleanup = () => {
   for (const child of children) {
     try {

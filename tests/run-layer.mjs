@@ -20,6 +20,7 @@
 // 所有用例的 cwd 都是仓库根目录（与历史跑法一致），因此测试内的相对路径（dist/、docs/ui/）不变。
 import { spawn } from 'node:child_process'
 import { readdir, readFile } from 'node:fs/promises'
+import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -69,10 +70,20 @@ const rel = (file) => path.relative(ROOT, file).split(path.sep).join('/')
 const SELF_SERVED = new Set([
   'internal-build.test.mjs',
   'motion.test.mjs',
+  'mode-switch.test.mjs',
   'diagnostics.test.mjs',
   'diagnostics-contract.test.mjs',
   'auto-title.test.mjs',
+  'feedback-export.test.mjs',
+  'mode-switch-plain.test.mjs',
+  'provider-channels.test.mjs',
 ])
+
+/** 用例的环境守卫退出码：77 = 端口被占/产物种类不对/产物陈旧（SKIP，不算失败） */
+const SKIP_CODE = 77
+
+/** 集成层基线清单（只判「不新增失败」） */
+const BASELINE_FILE = path.join(TESTS_DIR, 'integration-baseline.json')
 
 /** 用 node:test 写的用例走 `node --test`，历史自执行脚本直接 `node <file>` */
 const usesNodeTest = async (file) =>
@@ -107,7 +118,10 @@ const runFile = async (file) =>
       resolve({ ok: false, ms: Date.now() - startedAt, tail: [String(error)] })
     })
     child.on('close', (code, signal) => {
-      resolve({ ok: code === 0 && !signal, ms: Date.now() - startedAt, tail })
+      const text = tail.join('')
+      const skipped = code === SKIP_CODE
+      const reason = skipped ? (/SKIP\(env\) (.+)/.exec(text)?.[1] ?? '环境不满足').trim() : ''
+      resolve({ ok: code === 0 && !signal, skipped, reason, ms: Date.now() - startedAt, tail })
     })
   })
 
@@ -145,7 +159,11 @@ const main = async () => {
       console.log(`\n${'-'.repeat(70)}\n>> ${rel(file)}\n${'-'.repeat(70)}`)
       const result = await runFile(file)
       results.push({ layer, file, ...result })
-      console.log(`<< ${result.ok ? 'PASS' : 'FAIL'} ${rel(file)}（${(result.ms / 1000).toFixed(1)}s）`)
+      const status = result.ok ? 'PASS' : result.skipped ? 'SKIP(env)' : 'FAIL'
+      console.log(`<< ${status} ${rel(file)}（${(result.ms / 1000).toFixed(1)}s）`)
+      if (result.skipped) {
+        console.log(`   ↳ ${result.reason}`)
+      }
       if (!result.ok && flags.has('--bail')) {
         console.log('\n（--bail：遇到失败即停止）')
         return summarize(results)
@@ -155,7 +173,8 @@ const main = async () => {
   return summarize(results)
 
   function summarize(list) {
-    const failed = list.filter((r) => !r.ok)
+    const failed = list.filter((r) => !r.ok && !r.skipped)
+    const skipped = list.filter((r) => r.skipped)
     console.log(`\n${'='.repeat(70)}\n== 汇总\n${'='.repeat(70)}`)
     let current = ''
     for (const r of list) {
@@ -163,17 +182,92 @@ const main = async () => {
         current = r.layer
         console.log(`[${current}]`)
       }
-      console.log(`  ${r.ok ? 'PASS' : 'FAIL'}  ${rel(r.file)}  ${(r.ms / 1000).toFixed(1)}s`)
+      const status = r.ok ? 'PASS' : r.skipped ? 'SKIP(env)' : 'FAIL'
+      console.log(`  ${status}  ${rel(r.file)}  ${(r.ms / 1000).toFixed(1)}s`)
+      if (r.skipped) {
+        console.log(`        ↳ ${r.reason}`)
+      }
     }
     const ms = list.reduce((sum, r) => sum + r.ms, 0)
-    console.log(`\n共 ${list.length} 个文件：通过 ${list.length - failed.length}，失败 ${failed.length}（总耗时 ${(ms / 1000).toFixed(1)}s）`)
+    const passed = list.filter((r) => r.ok).length
+    console.log(
+      `\n共 ${list.length} 个文件：通过 ${passed}，失败 ${failed.length}，跳过(环境) ${skipped.length}（总耗时 ${(ms / 1000).toFixed(1)}s）`
+    )
     if (failed.length > 0) {
       console.log('失败用例：')
       for (const r of failed) console.log(`  - ${rel(r.file)}`)
+    }
+    if (skipped.length > 0) {
+      console.log('跳过（环境不满足，不产生假红）：')
+      for (const r of skipped) console.log(`  - ${rel(r.file)}：${r.reason}`)
+    }
+    const verdict = compareWithBaseline(list)
+    if (verdict !== null) {
+      return verdict
+    }
+    if (failed.length > 0) {
       return 1
     }
     console.log('全部通过 ✅')
     return 0
+  }
+
+  /** --baseline：与 tests/integration-baseline.json 比对，只判「不新增失败」 */
+  function compareWithBaseline(list) {
+    if (!flags.has('--baseline')) {
+      return null
+    }
+    let baseline
+    try {
+      baseline = JSON.parse(readFileSync(BASELINE_FILE, 'utf8'))
+    } catch (error) {
+      console.error(`\n读数失败：${BASELINE_FILE}（${error.message}）——没有基线就按普通模式判定`)
+      return null
+    }
+    const expectedOf = (file) => baseline.files?.[path.basename(file)] ?? null
+    const newFails = []
+    const fixed = []
+    const knownRed = []
+    const skipped = []
+    for (const r of list) {
+      const entry = expectedOf(r.file)
+      const expected = entry?.expected ?? 'pass'
+      if (r.skipped) {
+        skipped.push({ file: rel(r.file), reason: r.reason })
+        continue
+      }
+      if (r.ok && expected === 'known-red') {
+        fixed.push(rel(r.file))
+      } else if (!r.ok && expected === 'known-red') {
+        knownRed.push(rel(r.file))
+      } else if (!r.ok) {
+        newFails.push({ file: rel(r.file), reason: entry?.reason ?? '' })
+      }
+    }
+    console.log(`\n${'='.repeat(70)}\n== 基线比对（${path.basename(BASELINE_FILE)}，基线：${baseline.baseline?.ref ?? '未注明'}）\n${'='.repeat(70)}`)
+    const total = list.length
+    const failedCount = list.filter((r) => !r.ok && !r.skipped).length
+    const expectedRedCount = Object.values(baseline.files ?? {}).filter((entry) => entry.expected === 'known-red').length
+    console.log(`本次失败 ${failedCount} / 基线登记红 ${expectedRedCount} / 新增失败 ${newFails.length} / 已转绿 ${fixed.length} / 跳过(环境) ${skipped.length}（共 ${total} 个文件）`)
+    if (knownRed.length > 0) {
+      for (const file of knownRed) console.log(`  KNOWN-RED  ${file}（基线已登记，不算新增）`)
+    }
+    if (skipped.length > 0) {
+      for (const item of skipped) console.log(`  SKIP(ENV)  ${item.file}：${item.reason}`)
+    }
+    if (fixed.length > 0) {
+      console.log('基线里记着红、但这次通过了（请更新基线清单）：')
+      for (const file of fixed) console.log(`  FIXED?     ${file}`)
+    }
+    if (newFails.length > 0) {
+      console.log('新增失败（基线里期望通过）：')
+      for (const item of newFails) console.log(`  NEW FAIL   ${item.file}${item.reason ? `（${item.reason}）` : ''}`)
+    }
+    if (newFails.length === 0 && fixed.length === 0) {
+      console.log('\n相对基线没有新增失败 ✅')
+      return 0
+    }
+    return 1
   }
 }
 

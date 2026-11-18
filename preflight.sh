@@ -11,7 +11,7 @@
 #
 # 九项：
 #   1 git 工作区干净   2 TypeScript 类型检查   3 lint（oxlint）   4 unit 测试
-#   5 integration 测试 6 e2e 真上游测试        7 版本号递增校验   8 CHANGELOG 段落
+#   5 integration 测试（相对基线无新增失败）    6 e2e 真上游测试    7 版本号递增校验   8 CHANGELOG 段落
 #   9 APK 元信息校验
 #
 # 环境变量：GRADLE / APK / AAPT2 / RELEASES_URL / CHANGELOG
@@ -259,17 +259,28 @@ else
 fi
 
 # ---------------------------------------------------------------- 5) integration
-item 5 "integration 测试"
+# 判定口径：**相对基线没有新增失败**（tests/integration-baseline.json），不是「全绿」。
+# 基线里登记为 known-red 的用例照常执行但不判失败；环境不满足的用例由用例自己 SKIP(env)。
+item 5 "integration 测试（相对基线无新增失败）"
 if (( SKIP_TESTS )); then
   verdict SKIP "被 --skip-tests 跳过（未验证）"
 elif (( DRY_RUN )); then
-  if [[ -n ${INTEGRATION_CMD:-} ]]; then plan "${INTEGRATION_CMD}"; elif has_script test:integration; then plan "npm run test:integration"
+  if [[ -n ${INTEGRATION_CMD:-} ]]; then plan "${INTEGRATION_CMD}"; elif has_script test:integration:baseline; then plan "APP_URL=<标准包地址> npm run test:integration:baseline"
+  elif has_script test:integration; then plan "npm run test:integration（无基线脚本，按全绿判定）"
   elif [[ -d tests/integration ]]; then plan "node --test tests/integration"; else plan "（无 integration 目标 → 会标记 SKIP）"; fi
   verdict PLANNED
 else
   if [[ -n ${INTEGRATION_CMD:-} ]]; then
     if bash -c "${INTEGRATION_CMD}" >"${LOG_DIR}/integration.log" 2>&1; then RUN_TAIL=$(tail -2 "${LOG_DIR}/integration.log"); verdict PASS "INTEGRATION_CMD: ${INTEGRATION_CMD}"
     else RUN_TAIL=$(tail -20 "${LOG_DIR}/integration.log"); show_tail; verdict FAIL "INTEGRATION_CMD 失败: ${INTEGRATION_CMD}" "复跑看完整输出：${INTEGRATION_CMD}"; fi
+  elif has_script test:integration:baseline; then
+    if run_logged integration 'npm run test:integration:baseline' npm run test:integration:baseline; then
+      RUN_TAIL=$(grep -E '本次失败|新增失败' "${LOG_DIR}/integration.log" | tail -1)
+      verdict PASS "npm run test:integration:baseline（${RUN_TAIL:-相对基线无新增失败}）"
+    else
+      show_tail
+      verdict FAIL 'integration 相对基线出现新增失败' '复跑：npm run test:integration:baseline（明细见 tests/integration-baseline.json 与 docs/testing.md）'
+    fi
   elif has_script test:integration; then
     if run_logged integration 'npm run test:integration' npm run test:integration; then verdict PASS 'npm run test:integration'
     else show_tail; verdict FAIL 'npm run test:integration 失败' '复跑：npm run test:integration'; fi

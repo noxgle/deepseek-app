@@ -19,15 +19,18 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { chromium } from 'playwright'
+import { serveDir, verifyAppUrl } from '../helpers/env.mjs'
+import { OURS_CHAT_PATH } from '../fixtures/ours-upstream.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, '../..')
 const INTERNAL_DIST = process.env.DIST_DIR || path.join(ROOT, 'dist')
 const STANDARD_DIST = process.env.STANDARD_DIST_DIR || path.join(ROOT, 'dist-standard')
-const INTERNAL_PORT = process.env.PORT || '5295'
-const STANDARD_PORT = process.env.STANDARD_PORT || '5296'
-const INTERNAL_URL = `http://127.0.0.1:${INTERNAL_PORT}`
-const STANDARD_URL = `http://127.0.0.1:${STANDARD_PORT}`
+const INTERNAL_PORT = process.env.PORT
+const STANDARD_PORT = process.env.STANDARD_PORT
+// 端口自动发现（PORT/STANDARD_PORT 可注入）：下面起服务后再填
+let INTERNAL_URL = ''
+let STANDARD_URL = ''
 const API_KEY = 'sk-contract-test-key-0123456789'
 const ZIP_URL = 'https://obs.example.test/deepseek_data-2026-11-01.zip'
 
@@ -72,17 +75,13 @@ if (build.status !== 0) {
 ok('dist-standard 构建完成')
 
 const children = []
-const startServer = (port, dir) => {
-  const child = spawn('python3', ['-m', 'http.server', port, '--bind', '127.0.0.1', '--directory', dir], {
-    cwd: ROOT,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  })
-  children.push(child)
-  return child
-}
-startServer(INTERNAL_PORT, INTERNAL_DIST)
-startServer(STANDARD_PORT, STANDARD_DIST)
-await new Promise((resolve) => setTimeout(resolve, 800))
+// 端口自动发现（两个服务各一个空闲端口）
+const internalServed = await serveDir(INTERNAL_DIST, { port: INTERNAL_PORT, label: '内测产物 dist' })
+const standardServed = await serveDir(STANDARD_DIST, { port: STANDARD_PORT, label: '标准产物 dist-standard' })
+INTERNAL_URL = internalServed.url
+STANDARD_URL = standardServed.url
+await verifyAppUrl(INTERNAL_URL, INTERNAL_DIST, { variant: 'internal' })
+await verifyAppUrl(STANDARD_URL, STANDARD_DIST, { variant: 'standard' })
 
 const browser = await chromium.launch()
 const cleanup = () => {
@@ -186,7 +185,7 @@ try {
     const { context, page } = await openApp({
       routes: [
         [
-          '**/v1/messages',
+          `**${OURS_CHAT_PATH}`,
           (route) =>
             route.fulfill({
               status: 502,
@@ -209,7 +208,7 @@ try {
       response?.meta?.['http.status'] === 502 &&
         response.level === 'error' &&
         typeof response.meta?.durationMs === 'number' &&
-        String(response.meta?.['url.path'] ?? '').endsWith('/v1/messages'),
+        String(response.meta?.['url.path'] ?? '').endsWith(OURS_CHAT_PATH),
       `net_response 到位：status=${response?.meta?.['http.status']} level=${response?.level} durationMs=${response?.meta?.durationMs} url.path=${response?.meta?.['url.path']}`,
       `net_response 字段不全：${JSON.stringify(response)}`
     )

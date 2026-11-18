@@ -1,0 +1,123 @@
+{
+  "schemaVersion": 1,
+  "baseline": {
+    "ref": "origin/main@abf5c68（1.4.0-beta.7）",
+    "recordedAt": "2026-11-18",
+    "recordedBy": "Issue #19（集成测试基线红）",
+    "note": "记录「每个集成文件应该是什么状态」。L2 全量门只判「相对基线没有新增失败」，不追全绿。known-red 必须写 reason 与 issue，修好后删除该条（runner 会把「记红却转绿」也报出来，防止基线腐烂）。"
+  },
+  "howToRun": {
+    "standardBuild": "NODE_ENV=production DIST_OUT=dist-standard rspack build -c rspack.config.ts",
+    "internalBuild": "INTERNAL_BUILD=1 NODE_ENV=production rspack build -c rspack.config.ts",
+    "serveStandard": "python3 -m http.server 5301 --bind 127.0.0.1 --directory dist-standard",
+    "command": "APP_URL=http://127.0.0.1:5301 npm run test:integration -- --baseline",
+    "detail": "docs/testing.md"
+  },
+  "guards": {
+    "port": "自建静态服务的用例不再用固定端口：PORT 未指定时走 tests/helpers/env.mjs 的 serveDir()，由操作系统分配空闲端口，并在进程退出时杀服务（曾经固定 5291~5296 撞到其它任务遗留的服务 → 一整批假红）。",
+    "artifact": "用例开跑前调用 verifyAppUrl()/verifyDist()：地址不可达、端口上 serve 的不是这份产物、产物种类不对（内测/标准）、产物比源码旧 → 打印原因并 exit 77（SKIP(env)，不算失败）。",
+    "buildInfo": "每次构建会在产物目录写 build-info.json（variant/main/hash/version/builtAt），守卫据此判断，不靠猜。"
+  },
+  "files": {
+    "auto-title.test.mjs": {
+      "expected": "pass",
+      "artifact": "self",
+      "reason": "自己构建 dist-standard + 自己起服务（端口自动分配）"
+    },
+    "caps.test.mjs": {
+      "expected": "pass",
+      "artifact": "standard",
+      "reason": "外部 APP_URL 指向标准包"
+    },
+    "diagnostics-contract.test.mjs": {
+      "expected": "pass",
+      "artifact": "internal+standard",
+      "reason": "两套产物各起一个服务；[B] 打桩路径已按 ours 契约改成 /v1/chat/completions"
+    },
+    "diagnostics.test.mjs": {
+      "expected": "pass",
+      "artifact": "internal",
+      "reason": "内测产物 + 端口自动分配"
+    },
+    "feedback-export.test.mjs": {
+      "expected": "pass",
+      "artifact": "standard",
+      "reason": "版本号改为从产物 meta[application-version] 读取（原先硬编码 v1.4.0-beta.6 → 发版即假红）"
+    },
+    "full-acceptance.test.mjs": {
+      "expected": "pass",
+      "artifact": "standard",
+      "reason": "外部 APP_URL 指向标准包"
+    },
+    "internal-build.test.mjs": {
+      "expected": "pass",
+      "artifact": "internal",
+      "reason": "ours 契约已对齐（62.106.70.167:60010 + /v1/chat/completions + Bearer）"
+    },
+    "legacy-config.test.mjs": {
+      "expected": "pass",
+      "artifact": "standard",
+      "reason": "外部 APP_URL 指向标准包"
+    },
+    "mode-switch-plain.test.mjs": {
+      "expected": "pass",
+      "artifact": "standard(self-built)",
+      "reason": "自动构建 dist-plain + 端口自动分配；baseline 基准改读 tests/fixtures/input-row-baseline.json（历史包不可复现）"
+    },
+    "mode-switch.test.mjs": {
+      "expected": "pass",
+      "artifact": "internal",
+      "reason": "打桩改走 tests/fixtures/ours-upstream.mjs；深度思考/智能搜索按 ours 契约断言不渲染；端口自动分配"
+    },
+    "motion.test.mjs": {
+      "expected": "pass",
+      "artifact": "internal",
+      "reason": "打桩改走 tests/fixtures/ours-upstream.mjs（OpenAI SSE）；端口自动分配"
+    },
+    "paths.test.mjs": {
+      "expected": "pass",
+      "artifact": "standard",
+      "reason": "外部 APP_URL 指向标准包（曾因 5181 被别的服务占着而假红）"
+    },
+    "probe-auth.test.mjs": {
+      "expected": "pass",
+      "artifact": "standard",
+      "reason": "外部 APP_URL 指向标准包"
+    },
+    "probe-nokey.test.mjs": {
+      "expected": "pass",
+      "artifact": "standard",
+      "reason": "外部 APP_URL 指向标准包"
+    },
+    "provider-anthropic.test.mjs": {
+      "expected": "pass",
+      "artifact": "standard",
+      "reason": "外部 APP_URL 指向标准包"
+    },
+    "provider-channels.test.mjs": {
+      "expected": "pass",
+      "artifact": "standard(self-built)",
+      "reason": "ours 契约已对齐；自己构建并 serve dist-standard（端口自动分配）"
+    },
+    "request-body.test.mjs": {
+      "expected": "pass",
+      "artifact": "standard",
+      "reason": "外部 APP_URL 指向标准包"
+    },
+    "upstream-html.test.mjs": {
+      "expected": "pass",
+      "artifact": "standard",
+      "reason": "外部 APP_URL 指向标准包"
+    },
+    "url-import-native.test.mjs": {
+      "expected": "pass",
+      "artifact": "standard",
+      "reason": "外部 APP_URL 指向标准包"
+    },
+    "url-import-web.test.mjs": {
+      "expected": "pass",
+      "artifact": "standard",
+      "reason": "夹具参数 title → titlePrefix（曾静默失效，侧栏标题对不上）"
+    }
+  }
+}

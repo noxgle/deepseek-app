@@ -87,10 +87,13 @@ E2E_API_KEY=sk-xxx node tests/e2e/real-upstream.test.mjs
 
 | 文件 | 需要什么 |
 | --- | --- |
-| `integration/paths` `provider-anthropic` `caps` `request-body` `upstream-html` `probe-auth` `probe-nokey` `legacy-config` `url-import-web` `url-import-native` `mode-switch` `full-acceptance` | 一份**标准构建**挂在 `APP_URL`（默认 5181）；语音相关用例要求 `127.0.0.1` 这类安全上下文 |
-| `integration/internal-build` `motion` `diagnostics` | 一份**内测构建**（`pnpm build:internal`）在 `dist/`；`internal-build` 还要 `ip addr add 123.207.199.196/32 dev lo` |
-| `integration/auto-title` `diagnostics-contract` | 无外部前置：自己 `DIST_OUT=dist-standard` 构建 + 自己起静态服务（会占端口 5295/5296） |
-| `integration/mode-switch-plain` | 两份产物：`PLAIN_URL`（当前标准构建）/ `BASELINE_URL`（改动前 baseline），默认 5191 / 5192 |
+| `integration/paths` `provider-anthropic` `caps` `request-body` `upstream-html` `probe-auth` `probe-nokey` `legacy-config` `url-import-web` `url-import-native` `full-acceptance` | 一份**标准构建**挂在 `APP_URL`（显式传，别指望默认端口是干净的）；语音相关用例要求 `127.0.0.1` 这类安全上下文 |
+| `integration/internal-build` `motion` `mode-switch` `diagnostics` | 一份**内测构建**（`pnpm build:internal`）在 `dist/`；用例自己起静态服务、自己选空闲端口（`PORT` 可注入） |
+| `integration/provider-channels` `feedback-export` `auto-title` `diagnostics-contract` | 标准构建：缺就自己 `DIST_OUT=dist-standard` 构建，然后自己起静态服务（端口自动分配） |
+| `integration/mode-switch-plain` | 只准备当前源码即可：自己构建 `dist-plain/` + 自己起服务；baseline 基准读 `tests/fixtures/input-row-baseline.json`（想比真实旧产物再传 `BASELINE_URL`） |
+
+> 集成层的完整跑法、产物要求与**基线比对**方式见 [`docs/testing.md`](../docs/testing.md)；
+> 分级门禁（L0/L1/L2）与「该跑哪些用例」见 [`docs/TESTING-POLICY.md`](../docs/TESTING-POLICY.md)。
 | `e2e/real-upstream` | `E2E_API_KEY` + 真上游；**跑之前确认上游 IP 没被绑在 lo 上**（`ip addr del 123.207.199.196/32 dev lo`） |
 | `e2e/diagnostics-upload` | 真实反馈后端可达（会真的提交一条反馈） |
 | `device/url-import-device` | AVD + `adb`；脚本自己起 5227 提供 20MB 导入包 |
@@ -128,7 +131,10 @@ E2E_API_KEY=sk-xxx node tests/e2e/real-upstream.test.mjs
 3. **模拟器要 `-memory 1280`**：`-memory 2048` 会把这台 4G slice 打满后卡死。
 4. **断网测试用 `ip link set eth0 down`**：`svc wifi disable` 在 AVD 上无效（模拟器没有 wifi service 状态）。
 5. **内测包和标准包别混**：内测包 `pnpm build:internal`（上游/模型/服务类型钉死，设置页只剩 API Key），标准包 `pnpm build`（可自填地址）。内测类用例必须配内测包，标准类用例必须配标准包，否则断言会从「UI 没入口」开始一路失败。
-6. **上游 IP 绑回环是个开关**：跑 `internal-build` 前要 `ip addr add 123.207.199.196/32 dev lo`，跑 `e2e/real-upstream` 前要 `ip addr del 123.207.199.196/32 dev lo`（脚本会自检并给提示）。
+6. **上游 IP 绑回环只对 e2e 有影响**：`internal-build` 等集成用例用 `page.route` 打桩，不需要绑 IP；跑 `e2e/real-upstream` 前要 `ip addr del 123.207.199.196/32 dev lo`（脚本会自检并给提示）。
+8. **端口撞车会伪装成「产品坏了」**：固定端口被别的进程占着时，用例会连到那份陌生产物并成片红。
+   现在自建服务的用例走 `tests/helpers/env.mjs` 的 `serveDir()`（空闲端口 + 退出即杀），
+   并会校验端口上那份产物的 `build-info.json`；不匹配就打印 `SKIP(env)` 而不是失败。
 7. **`dist-standard/` 是测试副产物**：`auto-title` / `diagnostics-contract` 会自己 `DIST_OUT=dist-standard` 构建，已 gitignore；别把它当部署产物。
 8. **端口冲突会伪装成断言失败**：静态服务端口被占时脚本可能连到旧服务。跑之前 `ss -ltnp | grep 5181` 看一眼。
 
@@ -136,17 +142,17 @@ E2E_API_KEY=sk-xxx node tests/e2e/real-upstream.test.mjs
 
 ```bash
 pnpm install && npx playwright install chromium   # 一次性
-pnpm build:internal && npm run test:integration -- --only internal-build
 npm test                                          # unit
-pnpm build                                        # 标准包
-npm run test:all                                  # unit + integration
+pnpm build:internal                               # 内测包 → dist/
+DIST_OUT=dist-standard pnpm build                 # 标准包 → dist-standard/ + 起服务给 APP_URL
+APP_URL=http://127.0.0.1:5301 npm run test:integration:baseline   # 集成层：只判「相对基线无新增失败」
 E2E_API_KEY=sk-xxx npm run test:e2e               # 真上游握手（发版前必跑）
 ```
 
 清单（按顺序勾）：
 
 - [ ] `npm test`（unit）通过
-- [ ] `npm run test:integration` 通过（含 internal-build / motion / diagnostics）
+- [ ] `APP_URL=… npm run test:integration:baseline` 相对基线没有新增失败（含 internal-build / motion / diagnostics）
 - [ ] `E2E_API_KEY=sk-xxx npm run test:e2e` 通过（真 key + 真 UI + 真上游）
 - [ ] 改动涉及「从链接导入」时：`npm run test:device` 通过
 - [ ] 产物用的是发版对应的那一种（标准包 / 内测包），没有拿错 `dist/`
